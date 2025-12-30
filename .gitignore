@@ -1,0 +1,17 @@
+# Environment & secrets
+.env
+secrets.toml
+
+# Uploaded face images
+app/data/uploaded_faces/*
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
