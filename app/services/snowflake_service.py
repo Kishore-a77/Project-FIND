@@ -208,3 +208,22 @@ def delete_match_logs_for_person(person_id):
 
     cur.close()
     conn.close()
+
+def fetch_analytics_data():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            OPERATOR_DECISION,
+            CONFIDENCE,
+            CAMERA_LOCATION,
+            ESCALATION_LEVEL,
+            MATCH_TIME
+        FROM MATCH_LOGS
+    """)
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
