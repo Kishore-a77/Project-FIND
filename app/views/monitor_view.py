@@ -1,19 +1,31 @@
 import streamlit as st
 import cv2
 import av
+import requests
+from datetime import datetime
+
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from streamlit_autorefresh import st_autorefresh
 
-from app.services.face_service import face_app
+from app.services.face_service import detect_faces
 from app.services.matching_service import find_best_match
-from app.services.snowflake_service import fetch_all_persons_with_images
+from app.services.snowflake_service import (
+    fetch_all_persons_with_images,
+    insert_match_log,
+)
 from app.views.ui_utils import confidence_badge
-
-CAMERA_LOCATION = "Main Gate Camera"
 
 
 # -------------------------------------------------
-# Cache DB embeddings
+# CONFIG
+# -------------------------------------------------
+CAMERA_LOCATION = "Main Gate Camera"
+FRAME_SKIP = 3
+N8N_WEBHOOK_URL = "http://localhost:5678/webhook/confirmed-match"
+
+
+# -------------------------------------------------
+# Cache DB embeddings (NO DB calls per frame)
 # -------------------------------------------------
 @st.cache_data
 def load_db_embeddings():
@@ -21,16 +33,25 @@ def load_db_embeddings():
 
 
 # -------------------------------------------------
-# Video Processor
+# Video Processor (WebRTC)
 # -------------------------------------------------
 class FaceProcessor(VideoProcessorBase):
     def __init__(self):
         self.db_embeddings = load_db_embeddings()
         self.latest_match = None
+        self.frame_count = 0
 
     def recv(self, frame):
+        self.frame_count += 1
+
+        # -------------------------------
+        # FRAME SKIPPING (performance)
+        # -------------------------------
+        if self.frame_count % FRAME_SKIP != 0:
+            return frame
+
         img = frame.to_ndarray(format="bgr24")
-        faces = face_app.get(img)
+        faces = detect_faces(img)
         self.latest_match = None
 
         for face in faces:
@@ -69,11 +90,36 @@ class FaceProcessor(VideoProcessorBase):
 
 
 # -------------------------------------------------
+# Trigger n8n alert (CONFIRMED only)
+# -------------------------------------------------
+def trigger_n8n_alert(match):
+    payload = {
+        "person_id": match["person_id"],
+        "name": match["name"],
+        "confidence": match["score"],
+        "camera_location": match["camera_location"],
+        "match_time": str(datetime.utcnow()),
+
+        # Day 11 escalation metadata
+        "escalation_level": 2,
+        "acknowledged": False,
+    }
+
+    try:
+        response = requests.post(
+            N8N_WEBHOOK_URL, json=payload, timeout=5
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+# -------------------------------------------------
 # Streamlit View
 # -------------------------------------------------
 def monitor_view():
     st.title("🎥 Live Monitoring (WebRTC)")
-    st.caption("Industry-grade webcam stream using streamlit-webrtc")
+    st.caption("Optimized real-time surveillance feed")
 
     st_autorefresh(interval=700, key="monitor-refresh")
 
@@ -101,18 +147,47 @@ def monitor_view():
 
         col1, col2 = st.columns(2)
 
+        # -------------------------------
+        # CONFIRM MATCH
+        # -------------------------------
         with col1:
             if st.button("✅ Confirm Match"):
+                alert_sent = trigger_n8n_alert(match)
+
+                insert_match_log(
+                    person_id=match["person_id"],
+                    confidence=match["score"],
+                    camera_location=match["camera_location"],
+                    operator_decision="CONFIRMED",
+                    alert_sent=alert_sent,
+                    escalation_level=2,   # ✅ FINAL ESCALATION LEVEL
+                )
+
                 st.session_state.operator_action = "CONFIRMED"
 
+        # -------------------------------
+        # REJECT MATCH
+        # -------------------------------
         with col2:
             if st.button("❌ Reject Match"):
+                insert_match_log(
+                    person_id=match["person_id"],
+                    confidence=match["score"],
+                    camera_location=match["camera_location"],
+                    operator_decision="REJECTED",
+                    alert_sent=False,
+                    escalation_level=0,
+                )
+
                 st.session_state.operator_action = "REJECTED"
 
     else:
         st.info("Waiting for a confirmed AI match…")
 
+    # -------------------------------------------------
+    # Operator Feedback
+    # -------------------------------------------------
     if st.session_state.operator_action == "CONFIRMED":
-        st.success("✅ Match CONFIRMED. Alert triggered and logged.")
+        st.success("✅ Match CONFIRMED. Alert triggered & escalated.")
     elif st.session_state.operator_action == "REJECTED":
         st.warning("❌ Match REJECTED. No alert sent.")

@@ -10,6 +10,26 @@ face_app = FaceAnalysis(name="buffalo_l")
 face_app.prepare(ctx_id=0, det_size=(640, 640))
 
 
+# --------------------------------------------------
+# IMAGE COMPRESSION (Day 11 optimization)
+# --------------------------------------------------
+def compress_frame(frame, width=640):
+    """
+    Resize frame to fixed width while maintaining aspect ratio.
+    This drastically improves FPS with negligible accuracy loss.
+    """
+    h, w, _ = frame.shape
+    if w <= width:
+        return frame  # No need to upscale
+
+    ratio = width / w
+    new_height = int(h * ratio)
+    return cv2.resize(frame, (width, new_height))
+
+
+# --------------------------------------------------
+# IMAGE-BASED EMBEDDING (Day 4 flow)
+# --------------------------------------------------
 def get_face_embedding(image_path: str):
     """
     Detects the largest face in an image and returns its embedding.
@@ -25,7 +45,6 @@ def get_face_embedding(image_path: str):
     if not faces:
         raise ValueError("❌ No face detected in the image")
 
-    # Select the largest detected face (by area)
     face = max(
         faces,
         key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
@@ -39,13 +58,25 @@ def get_face_embedding(image_path: str):
     return embedding
 
 
+# --------------------------------------------------
+# LIVE VIDEO FACE DETECTION (with compression)
+# --------------------------------------------------
+def detect_faces(frame):
+    """
+    Detect faces from a video frame (with compression).
+    """
+    frame = compress_frame(frame)
+    return face_app.get(frame)
+
+
+# --------------------------------------------------
+# EMBEDDING COMPARISON
+# --------------------------------------------------
 def compare_faces(emb1: np.ndarray, emb2: np.ndarray):
     """
     Compares two face embeddings using cosine similarity.
-    Returns a similarity score between -1 and 1.
     """
 
-    # Normalize embeddings (VERY IMPORTANT)
     emb1 = emb1 / np.linalg.norm(emb1)
     emb2 = emb2 / np.linalg.norm(emb2)
 
@@ -55,8 +86,3 @@ def compare_faces(emb1: np.ndarray, emb2: np.ndarray):
     )[0][0]
 
     return round(float(score), 4)
-def detect_faces(frame):
-    """
-    Detect faces from a video frame
-    """
-    return face_app.get(frame)
