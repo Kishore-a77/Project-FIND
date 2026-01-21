@@ -1,4 +1,4 @@
-from app.services.snowflake_service import (
+from app.services.db_service import (
     fetch_all_missing_persons,
     fetch_match_logs,
     delete_missing_person

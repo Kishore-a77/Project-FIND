@@ -2,6 +2,8 @@ import streamlit as st
 import cv2
 import av
 import requests
+import json
+import numpy as np
 from datetime import datetime
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
@@ -9,8 +11,8 @@ from streamlit_autorefresh import st_autorefresh
 
 from app.services.face_service import detect_faces
 from app.services.matching_service import find_best_match
-from app.services.snowflake_service import (
-    fetch_all_persons_with_images,
+from app.services.db_service import (
+    fetch_all_missing_persons,
     insert_match_log,
 )
 from app.views.ui_utils import confidence_badge
@@ -25,11 +27,26 @@ N8N_WEBHOOK_URL = "http://localhost:5678/webhook/confirmed-match"
 
 
 # -------------------------------------------------
-# Cache DB embeddings (NO DB calls per frame)
+# Load & cache DB embeddings (SQLite)
 # -------------------------------------------------
 @st.cache_data
 def load_db_embeddings():
-    return fetch_all_persons_with_images()
+    """
+    Loads all persons from SQLite and converts
+    stored JSON embeddings into NumPy arrays.
+    """
+    persons = fetch_all_missing_persons()
+    db_embeddings = []
+
+    for row in persons:
+        person_id, name, age, notes, image_path, embedding_json, _ = row
+        embedding = np.array(json.loads(embedding_json))
+
+        db_embeddings.append(
+            (person_id, name, embedding)
+        )
+
+    return db_embeddings
 
 
 # -------------------------------------------------
@@ -160,7 +177,7 @@ def monitor_view():
                     camera_location=match["camera_location"],
                     operator_decision="CONFIRMED",
                     alert_sent=alert_sent,
-                    escalation_level=2,   # ✅ FINAL ESCALATION LEVEL
+                    escalation_level=2,
                 )
 
                 st.session_state.operator_action = "CONFIRMED"

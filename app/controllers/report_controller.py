@@ -3,7 +3,8 @@ import uuid
 import numpy as np
 from app.models.person_model import MissingPerson
 from app.services.face_service import get_face_embedding
-from app.services.snowflake_service import insert_missing_person
+from app.services.db_service import insert_missing_person
+
 
 UPLOAD_DIR = "app/data/uploaded_faces"
 
