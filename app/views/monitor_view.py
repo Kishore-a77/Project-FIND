@@ -1,210 +1,210 @@
 import streamlit as st
-import cv2
-import av
 import requests
-import json
-import numpy as np
 from datetime import datetime
+import time
+import os
 
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-from streamlit_autorefresh import st_autorefresh
-
-from app.services.face_service import detect_faces
-from app.services.matching_service import find_best_match
 from app.services.db_service import (
-    fetch_all_missing_persons,
-    insert_match_log,
+    fetch_pending_matches,
+    update_match_decision
 )
 from app.views.ui_utils import confidence_badge
+from app.controllers.camera_controller import CameraController
 
+# Initialize session state
+if 'camera_controller' not in st.session_state:
+    st.session_state.camera_controller = CameraController()
 
-# -------------------------------------------------
-# CONFIG
-# -------------------------------------------------
-CAMERA_LOCATION = "Main Gate Camera"
-FRAME_SKIP = 3
+if 'camera_instructions' not in st.session_state:
+    st.session_state.camera_instructions = ""
+    
+if 'show_instructions' not in st.session_state:
+    st.session_state.show_instructions = False
+
 N8N_WEBHOOK_URL = "http://localhost:5678/webhook/confirmed-match"
 
-
-# -------------------------------------------------
-# Load & cache DB embeddings (SQLite)
-# -------------------------------------------------
-@st.cache_data
-def load_db_embeddings():
-    """
-    Loads all persons from SQLite and converts
-    stored JSON embeddings into NumPy arrays.
-    """
-    persons = fetch_all_missing_persons()
-    db_embeddings = []
-
-    for row in persons:
-        person_id, name, age, notes, image_path, embedding_json, _ = row
-        embedding = np.array(json.loads(embedding_json))
-
-        db_embeddings.append(
-            (person_id, name, embedding)
-        )
-
-    return db_embeddings
-
-
-# -------------------------------------------------
-# Video Processor (WebRTC)
-# -------------------------------------------------
-class FaceProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.db_embeddings = load_db_embeddings()
-        self.latest_match = None
-        self.frame_count = 0
-
-    def recv(self, frame):
-        self.frame_count += 1
-
-        # -------------------------------
-        # FRAME SKIPPING (performance)
-        # -------------------------------
-        if self.frame_count % FRAME_SKIP != 0:
-            return frame
-
-        img = frame.to_ndarray(format="bgr24")
-        faces = detect_faces(img)
-        self.latest_match = None
-
-        for face in faces:
-            emb = face.embedding
-            match = find_best_match(emb, self.db_embeddings)
-
-            x1, y1, x2, y2 = face.bbox.astype(int)
-
-            if match and match["score"] >= 0.65:
-                label_type = "STRONG" if match["score"] >= 0.80 else "PROBABLE"
-                label = f"{match['name']} | {label_type} ({match['score']:.3f})"
-                color = (0, 255, 0) if match["score"] >= 0.80 else (0, 165, 255)
-
-                self.latest_match = {
-                    "person_id": match["person_id"],
-                    "name": match["name"],
-                    "score": match["score"],
-                    "camera_location": CAMERA_LOCATION,
-                }
-            else:
-                label = "Unknown"
-                color = (0, 0, 255)
-
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                img,
-                label,
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                color,
-                2,
-            )
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
-# -------------------------------------------------
-# Trigger n8n alert (CONFIRMED only)
-# -------------------------------------------------
 def trigger_n8n_alert(match):
     payload = {
         "person_id": match["person_id"],
-        "name": match["name"],
-        "confidence": match["score"],
+        "confidence": match["confidence"],
         "camera_location": match["camera_location"],
         "match_time": str(datetime.utcnow()),
-
-        # Day 11 escalation metadata
         "escalation_level": 2,
         "acknowledged": False,
     }
-
     try:
-        response = requests.post(
-            N8N_WEBHOOK_URL, json=payload, timeout=5
-        )
-        return response.status_code == 200
+        return requests.post(N8N_WEBHOOK_URL, json=payload, timeout=5).status_code == 200
     except Exception:
         return False
 
 
-# -------------------------------------------------
-# Streamlit View
-# -------------------------------------------------
 def monitor_view():
-    st.title("🎥 Live Monitoring (WebRTC)")
-    st.caption("Optimized real-time surveillance feed")
-
-    st_autorefresh(interval=700, key="monitor-refresh")
-
-    webrtc_ctx = webrtc_streamer(
-        key="face-monitor",
-        video_processor_factory=FaceProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-    )
-
-    st.divider()
-    st.subheader("Manual Verification")
-
-    if "operator_action" not in st.session_state:
-        st.session_state.operator_action = None
-
-    if webrtc_ctx.video_processor and webrtc_ctx.video_processor.latest_match:
-        match = webrtc_ctx.video_processor.latest_match
-
-        st.success("AI Match Detected")
-        st.write(f"**Name:** {match['name']}")
-        st.write(f"**Confidence:** {match['score']:.3f}")
-        confidence_badge(match["score"])
-        st.write(f"**Camera:** {match['camera_location']}")
-
-        col1, col2 = st.columns(2)
-
-        # -------------------------------
-        # CONFIRM MATCH
-        # -------------------------------
-        with col1:
-            if st.button("✅ Confirm Match"):
-                alert_sent = trigger_n8n_alert(match)
-
-                insert_match_log(
-                    person_id=match["person_id"],
-                    confidence=match["score"],
-                    camera_location=match["camera_location"],
-                    operator_decision="CONFIRMED",
-                    alert_sent=alert_sent,
-                    escalation_level=2,
-                )
-
-                st.session_state.operator_action = "CONFIRMED"
-
-        # -------------------------------
-        # REJECT MATCH
-        # -------------------------------
-        with col2:
-            if st.button("❌ Reject Match"):
-                insert_match_log(
-                    person_id=match["person_id"],
-                    confidence=match["score"],
-                    camera_location=match["camera_location"],
-                    operator_decision="REJECTED",
-                    alert_sent=False,
-                    escalation_level=0,
-                )
-
-                st.session_state.operator_action = "REJECTED"
-
+    st.title("🛂 Live Monitoring – Control Room")
+    
+    # Camera Control Section
+    st.subheader("🎥 Camera Control")
+    
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    with col1:
+        start_button = st.button("▶️ Start Camera", type="primary", use_container_width=True, 
+                               help="Open camera in a separate window")
+        
+    with col2:
+        stop_button = st.button("⏹️ Stop Camera", type="secondary", use_container_width=True,
+                              help="Close the camera window")
+    
+    with col3:
+        status = st.session_state.camera_controller.get_status()
+        if status == "Running":
+            st.markdown(
+                "<div style='background-color: #4CAF50; color: white; padding: 10px; "
+                "border-radius: 5px; text-align: center;'>"
+                "🟢 Camera Status: RUNNING</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                "<div style='background-color: #f44336; color: white; padding: 10px; "
+                "border-radius: 5px; text-align: center;'>"
+                "🔴 Camera Status: STOPPED</div>",
+                unsafe_allow_html=True
+            )
+    
+    # Handle button clicks
+    if start_button:
+        success, message = st.session_state.camera_controller.start_camera()
+        st.session_state.camera_instructions = message
+        st.session_state.show_instructions = True
+        st.rerun()
+    
+    if stop_button:
+        success, message = st.session_state.camera_controller.stop_camera()
+        st.session_state.camera_instructions = message
+        st.session_state.show_instructions = True
+        st.rerun()
+    
+    # Show instructions if available
+    if st.session_state.show_instructions and st.session_state.camera_instructions:
+        st.markdown("---")
+        st.subheader("📋 Instructions")
+        
+        # Display the instructions
+        lines = st.session_state.camera_instructions.split('\n')
+        for line in lines:
+            if line.strip():
+                if line.startswith("✅") or line.startswith("❌"):
+                    if "error" in line.lower() or "failed" in line.lower():
+                        st.error(line)
+                    else:
+                        st.success(line)
+                elif line.startswith("cd ") or line.startswith("python"):
+                    st.code(line, language="bash")
+                else:
+                    st.write(line)
+        
+        # Add a close button for the instructions
+        if st.button("Got it!", key="close_instructions"):
+            st.session_state.show_instructions = False
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Camera Feed Information
+    st.subheader("📹 Live Camera Feed Information")
+    
+    info_col1, info_col2 = st.columns(2)
+    
+    with info_col1:
+        st.info("""
+        **How to Start Camera:**
+        1. Click "Start Camera" button above
+        2. Follow the instructions to open camera
+        3. A separate window will open with live feed
+        4. Face detections will appear with colored boxes
+        """)
+    
+    with info_col2:
+        st.info("""
+        **Color Legend:**
+        - 🟢 **Green Box**: Strong match (≥ 0.80 confidence)
+        - 🟡 **Yellow Box**: Probable match (0.65-0.80 confidence)
+        - 🔴 **Red Box**: Unknown person (no match or low confidence)
+        
+        **To Stop**: Close the camera window or press 'q'
+        """)
+    
+    st.markdown("---")
+    
+    # Pending Matches Section
+    st.subheader("🔍 Pending Matches")
+    
+    # Auto-refresh every 10 seconds if camera is running
+    if st.session_state.camera_controller.is_running:
+        refresh_container = st.empty()
+        with refresh_container:
+            st.markdown("🔄 *Auto-refreshing every 10 seconds*")
+        
+        # Simple auto-refresh
+        time.sleep(10)
+        st.rerun()
+    
+    matches = fetch_pending_matches()
+    
+    if not matches:
+        st.info("No pending matches found.")
     else:
-        st.info("Waiting for a confirmed AI match…")
+        for log in matches:
+            log_id, person_id, confidence, camera, match_time = log
 
-    # -------------------------------------------------
-    # Operator Feedback
-    # -------------------------------------------------
-    if st.session_state.operator_action == "CONFIRMED":
-        st.success("✅ Match CONFIRMED. Alert triggered & escalated.")
-    elif st.session_state.operator_action == "REJECTED":
-        st.warning("❌ Match REJECTED. No alert sent.")
+            with st.container():
+                st.markdown(f"### 👤 Match Detected")
+                
+                # Display match info in columns
+                col_info1, col_info2 = st.columns(2)
+                with col_info1:
+                    st.write(f"**Person ID:** `{person_id}`")
+                    st.write(f"**Camera Location:** {camera}")
+                    st.write(f"**Detection Time:** {match_time}")
+                
+                with col_info2:
+                    st.write(f"**Confidence Score:** {confidence:.3f}")
+                    confidence_badge(confidence)
+                
+                # Decision buttons
+                st.markdown("#### Action Required:")
+                col_btn1, col_btn2, col_space = st.columns([1, 1, 2])
+                
+                with col_btn1:
+                    if st.button(f"✅ Confirm Match", key=f"confirm_{log_id}", 
+                               use_container_width=True, type="primary"):
+                        alert_sent = trigger_n8n_alert({
+                            "person_id": person_id,
+                            "confidence": confidence,
+                            "camera_location": camera,
+                        })
+
+                        update_match_decision(
+                            log_id=log_id,
+                            decision="CONFIRMED",
+                            alert_sent=alert_sent,
+                            escalation_level=2
+                        )
+                        st.success("✅ Match confirmed and alert sent!")
+                        time.sleep(1)
+                        st.rerun()
+
+                with col_btn2:
+                    if st.button(f"❌ Reject Match", key=f"reject_{log_id}", 
+                               use_container_width=True):
+                        update_match_decision(
+                            log_id=log_id,
+                            decision="REJECTED",
+                            alert_sent=False,
+                            escalation_level=0
+                        )
+                        st.warning("❌ Match rejected")
+                        time.sleep(1)
+                        st.rerun()
+                
+                st.markdown("---")

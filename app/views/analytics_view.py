@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from app.services.snowflake_service import fetch_analytics_data
+from app.services.db_service import fetch_analytics_data
 
 def analytics_view():
     st.title("📊 Analytics Dashboard")

@@ -1,11 +1,11 @@
 import sqlite3
 import json
 import uuid
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 
 # -------------------------------------------------
-# Database path
+# DB path
 # -------------------------------------------------
 DB_PATH = Path("app/db/app.db")
 
@@ -14,26 +14,18 @@ DB_PATH = Path("app/db/app.db")
 # Connection helper
 # -------------------------------------------------
 def get_connection():
-    """
-    Returns a SQLite connection with Row factory enabled.
-    """
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 # -------------------------------------------------
-# Initialize database (run once)
+# Initialize database
 # -------------------------------------------------
 def init_db():
-    """
-    Creates required tables if they do not exist.
-    """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Missing persons table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS MISSING_PERSONS (
             PERSON_ID TEXT PRIMARY KEY,
@@ -46,7 +38,6 @@ def init_db():
         )
     """)
 
-    # Match logs table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS MATCH_LOGS (
             LOG_ID TEXT PRIMARY KEY,
@@ -65,13 +56,9 @@ def init_db():
 
 
 # -------------------------------------------------
-# Insert missing person (Day 4)
+# INSERT: Missing Person
 # -------------------------------------------------
 def insert_missing_person(person):
-    """
-    Stores missing person details and face embedding.
-    Embedding is stored as JSON string.
-    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -102,19 +89,56 @@ def insert_missing_person(person):
 
 
 # -------------------------------------------------
-# Insert match log (Day 7 / Day 8 / Day 11)
+# INSERT: Match Log (Pending Match)
+# -------------------------------------------------
+def create_pending_match(
+    person_id,
+    confidence,
+    camera_location,
+    alert_sent=False,
+    escalation_level=0
+):
+    """Create a pending match record (for vision_engine.py)"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    log_id = str(uuid.uuid4())
+    
+    cur.execute(
+        """
+        INSERT INTO MATCH_LOGS
+        (LOG_ID, PERSON_ID, CONFIDENCE, CAMERA_LOCATION,
+         MATCH_TIME, ALERT_SENT, OPERATOR_DECISION, ESCALATION_LEVEL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            log_id,
+            person_id,
+            confidence,
+            camera_location,
+            datetime.utcnow(),
+            int(alert_sent),
+            None,  # operator_decision is NULL for pending matches
+            escalation_level,
+        )
+    )
+
+    conn.commit()
+    conn.close()
+    return log_id
+
+
+# -------------------------------------------------
+# INSERT: Match Log (General)
 # -------------------------------------------------
 def insert_match_log(
     person_id,
     confidence,
     camera_location,
-    operator_decision,
+    operator_decision=None,
     alert_sent=False,
     escalation_level=0
 ):
-    """
-    Inserts an audit log for a detected match.
-    """
     conn = get_connection()
     cur = conn.cursor()
 
@@ -142,58 +166,20 @@ def insert_match_log(
 
 
 # -------------------------------------------------
-# Fetch match logs (Admin / Analytics)
-# -------------------------------------------------
-def fetch_match_logs(limit=100):
-    """
-    Fetches recent match logs for admin panel and analytics.
-    """
-    limit = min(limit, 500)
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            LOG_ID,
-            PERSON_ID,
-            CONFIDENCE,
-            CAMERA_LOCATION,
-            MATCH_TIME,
-            OPERATOR_DECISION,
-            ALERT_SENT,
-            ESCALATION_LEVEL
-        FROM MATCH_LOGS
-        ORDER BY MATCH_TIME DESC
-        LIMIT ?
-        """,
-        (limit,)
-    )
-
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-# -------------------------------------------------
-# Fetch all missing persons (Admin / Matching)
+# FETCH: All Missing Persons
 # -------------------------------------------------
 def fetch_all_missing_persons():
-    """
-    Returns all registered missing persons.
-    """
+    """Fetch all missing persons from database"""
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT
-            PERSON_ID,
-            NAME,
-            AGE,
-            NOTES,
+        SELECT 
+            PERSON_ID, 
+            NAME, 
+            AGE, 
+            NOTES, 
             IMAGE_PATH,
-            EMBEDDING,
             CREATED_AT
         FROM MISSING_PERSONS
         ORDER BY CREATED_AT DESC
@@ -205,12 +191,93 @@ def fetch_all_missing_persons():
 
 
 # -------------------------------------------------
-# Delete missing person (Admin)
+# FETCH: Missing Person by ID
+# -------------------------------------------------
+def fetch_missing_person_by_id(person_id):
+    """Fetch a specific missing person by ID"""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 
+            PERSON_ID, 
+            NAME, 
+            AGE, 
+            NOTES, 
+            IMAGE_PATH,
+            EMBEDDING,
+            CREATED_AT
+        FROM MISSING_PERSONS
+        WHERE PERSON_ID = ?
+    """, (person_id,))
+
+    row = cur.fetchone()
+    conn.close()
+    
+    if row:
+        # Convert to dict
+        return dict(row)
+    return None
+
+
+# -------------------------------------------------
+# FETCH: Pending Matches
+# -------------------------------------------------
+def fetch_pending_matches():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            LOG_ID,
+            PERSON_ID,
+            CONFIDENCE,
+            CAMERA_LOCATION,
+            MATCH_TIME,
+            ALERT_SENT,
+            ESCALATION_LEVEL
+        FROM MATCH_LOGS
+        WHERE OPERATOR_DECISION IS NULL
+        ORDER BY MATCH_TIME DESC
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# -------------------------------------------------
+# FETCH: All Match Logs
+# -------------------------------------------------
+def fetch_all_match_logs():
+    """Fetch all match logs (for admin view)"""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            LOG_ID,
+            PERSON_ID,
+            CONFIDENCE,
+            CAMERA_LOCATION,
+            MATCH_TIME,
+            ALERT_SENT,
+            OPERATOR_DECISION,
+            ESCALATION_LEVEL
+        FROM MATCH_LOGS
+        ORDER BY MATCH_TIME DESC
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# -------------------------------------------------
+# DELETE: Missing Person
 # -------------------------------------------------
 def delete_missing_person(person_id):
-    """
-    Deletes a missing person entry by ID.
-    """
+    """Delete a missing person record"""
     conn = get_connection()
     cur = conn.cursor()
 
@@ -221,3 +288,75 @@ def delete_missing_person(person_id):
 
     conn.commit()
     conn.close()
+    return cur.rowcount > 0
+
+
+# -------------------------------------------------
+# UPDATE: Operator Decision
+# -------------------------------------------------
+def update_match_decision(
+    log_id,
+    decision,
+    alert_sent=False,
+    escalation_level=0
+):
+    """
+    Updates human decision on a match.
+    decision: 'CONFIRMED' or 'REJECTED'
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE MATCH_LOGS
+        SET
+            OPERATOR_DECISION = ?,
+            ALERT_SENT = ?,
+            ESCALATION_LEVEL = ?
+        WHERE LOG_ID = ?
+        """,
+        (
+            decision,
+            int(alert_sent),
+            escalation_level,
+            log_id,
+        )
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# -------------------------------------------------
+# COUNT: Statistics
+# -------------------------------------------------
+def get_statistics():
+    """Get system statistics"""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Total missing persons
+    cur.execute("SELECT COUNT(*) FROM MISSING_PERSONS")
+    total_persons = cur.fetchone()[0]
+
+    # Total matches
+    cur.execute("SELECT COUNT(*) FROM MATCH_LOGS")
+    total_matches = cur.fetchone()[0]
+
+    # Confirmed matches
+    cur.execute("SELECT COUNT(*) FROM MATCH_LOGS WHERE OPERATOR_DECISION = 'CONFIRMED'")
+    confirmed_matches = cur.fetchone()[0]
+
+    # Pending matches
+    cur.execute("SELECT COUNT(*) FROM MATCH_LOGS WHERE OPERATOR_DECISION IS NULL")
+    pending_matches = cur.fetchone()[0]
+
+    conn.close()
+
+    return {
+        "total_persons": total_persons,
+        "total_matches": total_matches,
+        "confirmed_matches": confirmed_matches,
+        "pending_matches": pending_matches
+    }
