@@ -544,8 +544,8 @@ This project is open-source and available under the **MIT License**.
 
 ### Get in Touch
 - **GitHub Issues**: For bug reports and feature requests
-- **Email**: [kishoreachennai@gmail.com]
-- **LinkedIn**: [https://www.linkedin.com/in/kishore-a-95b9052b4/]
+- **Email**: kishoreachennai@gmail.com
+- **LinkedIn**: https://www.linkedin.com/in/kishore-a-95b9052b4/
 
 ---
 
